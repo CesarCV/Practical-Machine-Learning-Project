@@ -1,0 +1,240 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "César Carrera"
+date: "27/6/2021"
+output: html_document
+---
+
+## Introduction
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+
+### Weight Lifting Exercises Dataset
+
+This human activity recognition research has traditionally focused on discriminating between different activities, i.e. to predict "which" activity was performed at a specific point in time (like with the Daily Living Activities dataset above). The approach we propose for the Weight Lifting Exercises dataset is to investigate "how (well)" an activity was performed by the wearer. The "how (well)" investigation has only received little attention so far, even though it potentially provides useful information for a large variety of applications,such as sports training.
+
+In this work (see the paper) we first define quality of execution and investigate three aspects that pertain to qualitative activity recognition: the problem of specifying correct execution, the automatic and robust detection of execution mistakes, and how to provide feedback on the quality of execution to the user. We tried out an on-body sensing approach (dataset here), but also an "ambient sensing approach" (by using Microsoft Kinect - dataset still unavailable)
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz6z3nzSVtr
+
+
+
+
+```{r setup, include=FALSE, echo=FALSE, cache=TRUE}
+
+library(caret)
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(Factoshiny)
+library(FactoMineR)
+library(factoextra)
+library(randomForest)
+
+# train_url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+# test_url  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+
+orig_train_data <- read.csv("pml-training.csv")
+orig_test_data <- read.csv("pml-testing.csv")
+
+# dim(orig_train_data)
+# str(orig_train_data)
+# names(orig_train_data)
+# 
+# table(orig_train_data$new_window, useNA = "ifany")
+# table(orig_train_data$num_window, useNA = "ifany")
+
+
+```
+
+## Preliminary data analysis
+
+
+### Data cleaning
+
+#### Column names
+```{r }
+#Column names
+#names(orig_train_data)
+#sapply(orig_train_data, class)
+```
+#### Removing identification only columns
+```{r }
+proc_train_data <- orig_train_data %>% 
+    select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window,
+              num_window))
+
+proc_test_data <- orig_test_data %>% 
+    select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window,
+              num_window))
+```
+
+#### Nearly zero variance variables
+```{r }
+non_zero_var <- nearZeroVar(proc_train_data)
+
+proc_train_data <- proc_train_data[,-non_zero_var]
+proc_test_data <- proc_test_data[,-non_zero_var]
+
+dim(proc_train_data)
+```
+
+
+#### Variables with mostly missing values
+```{r }
+na_val_col <- sapply(proc_train_data, function(x) mean(is.na(x))) > 0.95
+
+proc_train_data <- proc_train_data[,na_val_col == FALSE]
+proc_test_data <- proc_test_data[,na_val_col == FALSE]
+
+dim(proc_train_data)
+```
+#### Converting the target variable to factor
+
+```{r }
+proc_train_data$classe <- as.factor(proc_train_data$classe)
+```
+
+
+### Exploratory analysis
+
+#### Correlation matrix
+
+As shown in the next plot, there are variables with high level of correlation, with both positive and negative correlation. In this context, it may be advisable to perform a pre-processing with Principal Component Analysis (PCA) to reduce the number of variables and reduce multicollinearity. However, the downside is that interpretability is lost.
+
+```{r }
+r <- cor(proc_train_data[,1:52])
+cor.plot(r, main = "Correlation Plot of Covariates", cex.axis = 0.7, cex.main = 0.6)
+```
+
+#### PCA analysis
+
+For this report we will predict the classe variable using both the original dataset (with a normalization preprocessing) and a dataset with PCA preprocessing. In this particular case, we will select only the first two PCA for predictions.
+
+The eigenvalues for the PCA analysis, after standardizing the dataset, shows the thefirst 12 dimensions picks up most of the variation. An eigenvalue> 1 indicates that the PCs have more variation than that represented by one of the original variables in the standardized data. This is commonly used as a cutoff point for CPs that are withheld. This is valid only when the data is
+standardized.
+
+
+```{r}
+pre_pca<-PCA(proc_train_data[,1:52], scale.unit = TRUE, graph = FALSE )
+
+get_eigenvalue(pre_pca)
+
+
+train_pca<-preProcess(proc_train_data[,1:52], method="pca", pcaComp = 12)
+
+rm(pre_pca)
+```
+
+
+
+
+## Models for prediction
+
+There are several models for predicting the target variable. In this report, we are not looking for optimal configurations of these models at this point, just a general idea of how well sophisticated models with default configurations perform on this problem.
+
+
+Therefore, for this report we have chosen to use the Random Forest model. Bear in mind that this model has the advantage of greater accuracy, however, it loses interoperability and can be computationally expensive in some scenarios. The model will be estimated for the original dataset and the data set with PCA preprocessing. 
+
+Also, 75% of the training data will be used to estimate the model and the remaining 25% to perform cross-validation.
+
+
+### Random Forest - standarized original dataset 
+
+```{r}
+set.seed(2806)
+
+train_part <- createDataPartition(y=proc_train_data$classe, p=0.75, list=FALSE)
+
+proc_part_train_data <- proc_train_data[train_part, ]
+proc_part_crossval_data <- proc_train_data[-train_part, ]
+
+#dim(proc_part_train_data)
+
+start.time <- Sys.time()
+
+model1_fit <- train(classe ~ ., data=proc_part_train_data, 
+                    preProcess=c("center", "scale"),
+                    method="rf", ntree = 100)
+
+end.time <- Sys.time()
+print(paste0("Time elapsed: ", end.time-start.time))
+
+model1_pred <- predict(model1_fit, proc_part_crossval_data)
+
+model1_conf <- confusionMatrix(model1_pred, proc_part_crossval_data$classe)
+model1_conf
+
+```
+The first randon forest model shows an accuracy of 0.9947, close to 1. Note that this precision is for the cross-validation sample, which may not be true for the final test sample.
+
+
+### Random Forest - PCA dataset
+
+
+```{r}
+set.seed(2806)
+
+trainPC <- predict(train_pca, proc_train_data)
+
+train_part <- createDataPartition(y=trainPC$classe, p=0.75, list=FALSE)
+
+pca_part_train_data <- trainPC[train_part, ]
+pca_part_crossval_data <- trainPC[-train_part, ]
+
+#dim(proc_part_train_data)
+
+start.time <- Sys.time()
+
+model2_fit <- train(classe ~ ., data=pca_part_train_data, 
+                    preProcess=c("center", "scale"),
+                    method="rf", ntree = 100)
+
+end.time <- Sys.time()
+print(paste0("Time elapsed: ", end.time-start.time))
+
+model2_pred <- predict(model2_fit, pca_part_crossval_data)
+
+model2_conf <- confusionMatrix(model2_pred, pca_part_crossval_data$classe)
+model2_conf
+
+```
+The second randon forest model, with the 12 PC, shows an accuracy of 0.9621, witch is less that of the first model, but with a significant less time to compute (approximately 13 minutes for the first model and almost 4 minutes for the second model). 
+
+Although the interpretability of the second model is reduced due to the model used (random forest) and the use of PCA, if the only objective is to predict, it is recommended to use the second model due to its lower computational requirement.
+
+
+
+
+
+## Prediction for the test dataset
+
+
+```{r}
+
+proc_test_data <- proc_test_data %>% select(-problem_id)
+
+testPC <- predict(train_pca, proc_test_data)
+
+
+
+model1_test_pred <- predict(model1_fit, proc_test_data )
+model1_test_pred
+
+
+model2_test_pred <- predict(model2_fit, testPC )
+model2_test_pred
+
+table(model1_test_pred==model2_test_pred)
+
+```
+The two models give almost the same prediction, except for two observations. There is no classe variable in the test dataset and therefore it is not possible at the moment to measure the precision in the test sample.
+
+
+
